@@ -11,7 +11,7 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-const API_KEY = "YOUR_API_KEY"; // must match the ESP32 firmware's API_KEY
+const API_KEY = "mastitis2026secret"; // must match the ESP32 firmware's API_KEY
 
 // In-memory store: { cow_id: { id, name, temp, lastUpdated } }
 // Pre-seed with the cows your app already knows about.

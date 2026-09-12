@@ -1,13 +1,17 @@
 {
-  "name": "mastitis-backend",
+  "name": "dairy-farm-backend",
   "version": "1.0.0",
-  "description": "Backend for the AI-based bovine mastitis monitoring app",
+  "description": "Backend for the dairy farm app: cow sensor readings (temp, milk conductivity, yield, pH) + AI advisory proxy",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
   },
+  "engines": {
+    "node": ">=18"
+  },
   "dependencies": {
     "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
     "express": "^4.19.2"
   }
 }

@@ -7,12 +7,6 @@
  *   POST /api/cows/:id/reading     -> ESP32 posts a new sensor reading
  *   POST /api/advisory             -> proxies farmer questions/photos to Gemini AI
  *
- * Setup:
- *   npm init -y
- *   npm install express cors dotenv @google/genai
- *   echo "GEMINI_API_KEY=AIzaSy..." > .env
- *   node server.js
- *
  * Environment Variable Required:
  *   GEMINI_API_KEY (Get from https://aistudio.google.com)
  */
@@ -20,18 +14,13 @@
 require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
-const { GoogleGenAI } = require("@google/genai");
 
 const app = express();
 app.use(cors());
 app.use(express.json({ limit: "15mb" })); // large enough for base64 photos
 
 const PORT = process.env.PORT || 3000;
-
-// Initialize Google Gen AI client
-const ai = process.env.GEMINI_API_KEY
-  ? new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY })
-  : null;
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 
 // ---------------------------------------------------------------
 // In-memory cow store
@@ -110,14 +99,14 @@ const cows = new Map([
 ]);
 
 // ---------------------------------------------------------------
-// GET /api/cows — the frontend polls this every 5s
+// GET /api/cows — frontend polls this to populate cow cards
 // ---------------------------------------------------------------
 app.get("/api/cows", (req, res) => {
   res.json(Array.from(cows.values()));
 });
 
 // ---------------------------------------------------------------
-// POST /api/cows — add a new cow from the app's "Add cow" form
+// POST /api/cows — add a new cow
 // body: { id?, name }
 // ---------------------------------------------------------------
 app.post("/api/cows", (req, res) => {
@@ -145,10 +134,7 @@ app.post("/api/cows", (req, res) => {
 });
 
 // ---------------------------------------------------------------
-// POST /api/cows/:id/reading — ESP32 / sensor gateway posts here
-// body can include any subset of:
-//   { temperature_c, ambient_temp_c, ambient_humidity_pct,
-//     milk_conductivity_mscm, milk_yield_l, milk_ph }
+// POST /api/cows/:id/reading — ESP32 posts updated metrics here
 // ---------------------------------------------------------------
 app.post("/api/cows/:id/reading", (req, res) => {
   const cow = cows.get(req.params.id);
@@ -170,11 +156,11 @@ app.post("/api/cows/:id/reading", (req, res) => {
 });
 
 // ---------------------------------------------------------------
-// POST /api/advisory — proxies farmer questions/photos to Gemini
+// POST /api/advisory — proxies farmer questions/photos to Gemini API
 // body: { text, imageDataUrl?, lang, history: [{from, text}] }
 // ---------------------------------------------------------------
 app.post("/api/advisory", async (req, res) => {
-  if (!process.env.GEMINI_API_KEY || !ai) {
+  if (!GEMINI_API_KEY) {
     return res
       .status(500)
       .json({ error: "GEMINI_API_KEY is not configured on the server" });
@@ -196,53 +182,64 @@ app.post("/api/advisory", async (req, res) => {
     `not just a referral. Keep answers short (3-5 sentences), warm, and ` +
     `practical. Respond only in ${langName}.`;
 
-  try {
-    const contents = [];
+  // Format historical context for Gemini
+  const contents = history.slice(-6).map((m) => ({
+    role: m.from === "user" ? "user" : "model",
+    parts: [{ text: m.text || "" }],
+  }));
 
-    // Map conversation history
-    for (const m of history.slice(-6)) {
-      contents.push({
-        role: m.from === "user" ? "user" : "model",
-        parts: [{ text: m.text || "" }],
-      });
-    }
+  // Build current message parts
+  const currentParts = [];
 
-    // Build current turn parts
-    const currentParts = [];
-
-    if (imageDataUrl) {
-      const mimeType = imageDataUrl.slice(5, imageDataUrl.indexOf(";")) || "image/jpeg";
-      const base64Data = imageDataUrl.split(",")[1];
-      currentParts.push({
-        inlineData: {
-          mimeType: mimeType,
-          data: base64Data,
-        },
-      });
-    }
-
-    currentParts.push({ text: text || "What do you see in this photo?" });
-
-    contents.push({
-      role: "user",
-      parts: currentParts,
-    });
-
-    // Generate response via SDK
-    const response = await ai.models.generateContent({
-      model: "gemini-2.5-flash",
-      contents: contents,
-      config: {
-        systemInstruction: systemInstructionText,
+  if (imageDataUrl) {
+    const mimeType = imageDataUrl.slice(5, imageDataUrl.indexOf(";")) || "image/jpeg";
+    const base64Data = imageDataUrl.split(",")[1];
+    currentParts.push({
+      inline_data: {
+        mime_type: mimeType,
+        data: base64Data,
       },
     });
+  }
 
-    const reply = response.text || "Sorry, I couldn't generate a response.";
+  currentParts.push({ text: text || "What do you see in this photo?" });
+
+  contents.push({
+    role: "user",
+    parts: currentParts,
+  });
+
+  try {
+    const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${GEMINI_API_KEY}`;
+
+    const response = await fetch(geminiUrl, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        system_instruction: {
+          parts: [{ text: systemInstructionText }],
+        },
+        contents: contents,
+      }),
+    });
+
+    if (!response.ok) {
+      const errBody = await response.text();
+      console.error("Gemini API error:", response.status, errBody);
+      return res.status(502).json({ error: "AI request failed" });
+    }
+
+    const data = await response.json();
+    const reply =
+      data.candidates?.[0]?.content?.parts?.[0]?.text ||
+      "Sorry, I couldn't generate a response.";
+
     res.json({ reply });
-
   } catch (err) {
-    console.error("Gemini SDK error:", err);
-    res.status(502).json({ error: "AI request failed", details: err.message });
+    console.error("Advisory proxy error:", err);
+    res.status(500).json({ error: "internal error" });
   }
 });
 
